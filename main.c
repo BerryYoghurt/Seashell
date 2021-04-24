@@ -20,7 +20,7 @@ void execute_process(char**);
 void print_exact_size(char*, int);
 
 int main() {
-    char* write_buf;
+    char* write_buf = malloc(MAXINPUT*sizeof(char));
     log_file = open("TerminateChildren.log",O_WRONLY|O_CREAT|O_APPEND, S_IRUSR | S_IWUSR);
     if(log_file <= 0){
         write_buf = "Error in creating the log file.\n";
@@ -28,8 +28,7 @@ int main() {
         write(STDOUT_FILENO,write_buf,sizeof(write_buf));
         exit(-1);
     }
-    write_buf = "~~~NEW SESSION~~~\n";
-    print_exact_size(write_buf, log_file);
+    print_exact_size("~~~NEW SESSION~~~\n", log_file);
 
     _Bool run = 1, background;
     char input[MAXINPUT];
@@ -39,7 +38,7 @@ int main() {
 
     struct sigaction sa;
     sa.sa_sigaction = child_terminated;
-    sa.sa_flags = SA_SIGINFO;
+    sa.sa_flags = SA_SIGINFO|SA_RESTART;
     sigaction(SIGCHLD,&sa,NULL);
 
     while(run){
@@ -79,6 +78,7 @@ int main() {
         }
     }
     close(log_file);
+    free(write_buf);
     free(pwd);
     free(args);
     return 0;
