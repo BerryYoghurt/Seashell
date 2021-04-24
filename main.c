@@ -9,23 +9,34 @@
 #define MAXINPUT 100 //max input length
 
 int log_file;
-pid_t seq_child_pid = -1;
+pid_t seq_child_pid = -1;//sequential child ID
 
+/**
+ * @param input is the raw line typed through the shell
+ * @param args is the command and options after being parsed. Must be an allocated array
+ * @param error_code marks errors.. for now if the line doesn't end after 100 characters
+ * @return true iff there is an apersand at the end of the input**/
 _Bool parse_input(char*, char**,int*);
 
+
+/**
+ * handler for SIGCHLD signal, logs the PID of the terminated child, its exit status, and whether it was synchronous or asynchronous*/
 void child_terminated(int, siginfo_t*, void*);
 
+/**
+ * a wrapper around exec call, only to make code cleaner*/
 void execute_process(char**);
 
+/**
+ * wrapper around write in order to write the exact number of lines.. to provide signal safety**/
 void print_exact_size(char*, int);
 
 int main() {
     char* write_buf = malloc(MAXINPUT*sizeof(char));
-    log_file = open("TerminateChildren.log",O_WRONLY|O_CREAT|O_APPEND, S_IRUSR | S_IWUSR);
+    log_file = open("TerminatedChildren.log",O_WRONLY|O_CREAT|O_APPEND, S_IRUSR | S_IWUSR);
     if(log_file <= 0){
         write_buf = "Error in creating the log file.\n";
         print_exact_size(write_buf, STDOUT_FILENO);
-        write(STDOUT_FILENO,write_buf,sizeof(write_buf));
         exit(-1);
     }
     print_exact_size("~~~NEW SESSION~~~\n", log_file);
@@ -43,18 +54,18 @@ int main() {
 
     while(run){
         sprintf(write_buf, "~~%s~~>", getcwd(pwd, MAXINPUT));
-        //printf("~~%s/~~>", getcwd(pwd, MAXINPUT));
         print_exact_size(write_buf, STDOUT_FILENO);
-        //fgets(input,MAXINPUT,stdin);
-        read(STDOUT_FILENO,input,MAXINPUT);
-        //printf("input is %s", input);
 
+        read(STDIN_FILENO,input,MAXINPUT);
         background = parse_input(input,args,&error_code);
 
-        /*for(int i = 0; i < 4; i++){
-            printf("argument %d is %s\n", i, args[i]);
-        }*/
-        //printf("error_code is %d\n", error_code);
+        if(error_code == 1){
+            print_exact_size("Input too long.\n", STDOUT_FILENO);
+            continue;
+        }else if(error_code == 2){
+            print_exact_size("Quotes were not closed or input too long.\n", STDOUT_FILENO);
+            continue;
+        }
 
         if(strcmp(args[0], "exit") == 0){
             run = 0;
@@ -68,15 +79,11 @@ int main() {
             if((seq_child_pid = fork()) == 0){
                 execute_process(args);
             }else{
-                //printf("PID %d should be waited on\n", seq_child_pid);
                 waitpid(seq_child_pid, &error_code, 0);
-                //printf("PID %d should've exited\n",seq_child_pid);
-                /*if(WIFEXITED(error_code)){
-                    printf("CHILD EXITED\n");
-                }*/
             }
         }
     }
+
     close(log_file);
     free(write_buf);
     free(pwd);
@@ -84,19 +91,13 @@ int main() {
     return 0;
 }
 
-/**
- * @param input is the raw line typed through the shell
- * @param args is the command and options after being parsed. Must be an allocated array
- * @param error_code marks errors.. for now if the line doesn't end after 100 characters
- * @return true iff there is an apersand at the end of the input**/
+
 _Bool parse_input(char* input, char** args, int* error_code){
     char** entry = args;
     *error_code = 0;
     int i = 0;
     _Bool amp = 0;
-    /*for(int j = 0; j < 20; j++){
-        printf("input at %d is %c\n", j,input[j]);
-    }*/
+
     while(i < MAXINPUT && input[i] != '\n' && input[i] != '&'){
         //skip all whitespace
         while(i < MAXINPUT && (input[i] == ' ' || input[i] == '\t')){
@@ -104,17 +105,34 @@ _Bool parse_input(char* input, char** args, int* error_code){
             i++;
         }
         //have we consumed the input yet?
-        if(i >= MAXINPUT || input[i] == '\n' || input[i] == '&'){
+        if(i >= MAXINPUT || input[i] == '\n' || input[i] == '&'||input[i] == '\0'){
             break;
         }
         //if not, register argument
-        *entry = &input[i];
-        entry++;
-        //skip all non-whitespace
-        while(i < MAXINPUT &&
-                !(input[i] == '&' || input[i] == '\n' || input[i] == ' ' || input[i] == '\t')){
-            i++;
+
+
+        //if in quote mode, keep everything as it is
+        if(input[i] == '"'){//accepts only double quotes
+            input[i++]='\0';
+            *entry = &input[i];
+
+            while(i < MAXINPUT && input[i++] != '"');
+
+            input[i-1] = '\0';
+            if(i >= MAXINPUT){
+            //consumed max number of input characters but the quote didn't end
+                *error_code = 2;
+            }
+        }else{
+            //else skip all non-whitespace
+            *entry = &input[i];
+            while(i < MAXINPUT &&
+                  !(input[i] == '&' || input[i] == '\n' || input[i] == ' ' || input[i] == '\t')){
+                i++;
+            }
         }
+        entry++;
+
     }
 
     if(i < MAXINPUT){
@@ -125,7 +143,7 @@ _Bool parse_input(char* input, char** args, int* error_code){
         if(i < MAXINPUT && input[i] == '\n'){
             input[i] = '\0';
         }
-    }else{
+    }else if (*error_code == 0){//no other error
         *error_code = 1;
     }
 
@@ -135,14 +153,19 @@ _Bool parse_input(char* input, char** args, int* error_code){
 }
 
 void child_terminated(int signum, siginfo_t* info, void * ucontext){
-    //write(STDOUT_FILENO,"RECEIVED SIGCHLD\n",20);
+    char buf[100];
+    int wstatus;
+    pid_t pid;
     if(info->si_pid != seq_child_pid) {//if the sequential child is the one who sent this signal, ignore it
-        char buf[50];
-        int wstatus;
-        pid_t pid = wait(&wstatus);
-        sprintf(buf, "Child with PID %d terminated with status %d\n", pid, wstatus);
+
+        pid = wait(&wstatus);
+        sprintf(buf, "Asynchronous child with PID %d terminated with status %d\n", pid, wstatus);
         print_exact_size(buf,log_file);
-        //write(STDOUT_FILENO,"TERMINATED!!\n",50);
+    }else{
+        pid = info->si_pid;
+        wstatus = info->si_status;
+        sprintf(buf, "Synchronous child with PID %d terminated with status %d\n", pid, wstatus);
+        print_exact_size(buf,log_file);
     }
 }
 
@@ -152,8 +175,7 @@ void execute_process(char** args){
     exit(-1);
 }
 
-/**
- * wrapper around write in order to write the exact number of lines**/
+
 void print_exact_size(char* buf, int fd){
     while(*buf != '\0'){
         write(fd,buf++,1);

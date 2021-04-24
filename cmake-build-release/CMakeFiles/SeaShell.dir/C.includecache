@@ -17,4 +17,8 @@ string.h
 -
 sys/wait.h
 -
+sys/stat.h
+-
+fcntl.h
+-
 
