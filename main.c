@@ -67,7 +67,9 @@ int main() {
             continue;
         }
 
-        if(strcmp(args[0], "exit") == 0){
+        if(args[0] == NULL){//empty line
+            continue;
+        }else if(strcmp(args[0], "exit") == 0){
             run = 0;
         }else if(strcmp(args[0],"cd") == 0){
             chdir(args[1]);
